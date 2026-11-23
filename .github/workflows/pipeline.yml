@@ -1,0 +1,77 @@
+name: kliquor pipeline
+
+on:
+  push:
+    paths: ["kliquor/**", "tests/**", "config/**", "requirements.txt", ".github/workflows/**"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "probe = API 컬럼 확인(5건) / all = 전체 수집+분석"
+        type: choice
+        options: [probe, all]
+        default: probe
+      quarter:
+        description: "상권 매출 기준 분기 YYYYQ (예: 20252) — mode=all일 때 필수"
+        type: string
+        default: ""
+      max_rows:
+        description: "소스별 최대 수집 건수 (빈칸=전체, 시험 실행 시 2000 등)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+
+  run:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SEOUL_API_KEY: ${{ secrets.SEOUL_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements.txt
+
+      - name: Probe APIs
+        if: inputs.mode == 'probe'
+        run: python -m kliquor.cli probe
+
+      - name: Collect + build
+        if: inputs.mode == 'all'
+        env:
+          QUARTER: ${{ inputs.quarter }}
+          MAX_ROWS: ${{ inputs.max_rows }}
+        run: |
+          if [ -n "$MAX_ROWS" ]; then
+            python -m kliquor.cli all --quarter "$QUARTER" --max-rows "$MAX_ROWS"
+          else
+            python -m kliquor.cli all --quarter "$QUARTER"
+          fi
+
+      - name: Job summary
+        if: always()
+        run: |
+          for f in outputs/probe.md outputs/summary.md; do
+            [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kliquor-outputs-${{ inputs.mode }}-${{ github.run_number }}
+          path: outputs/
+          if-no-files-found: ignore
+          retention-days: 90
