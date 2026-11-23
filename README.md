@@ -28,19 +28,25 @@
 
 ## 실행 방법 (GitHub Actions)
 
-1. [공공데이터포털](https://www.data.go.kr)에서 **"소상공인시장진흥공단_상가(상권)정보"** 오픈API **활용신청** (자동승인, 키 활성화까지 1~2시간 걸릴 수 있음)
-2. 저장소 Secrets에 `DATA_GO_KR_API_KEY` 등록 (일반 인증키. 인코딩/디코딩 키 어느 쪽이든 동작)
-3. **Actions → kliquor pipeline → Run workflow**
-   1. `mode=probe` → 실행 요약에서 응답 필드·업종명 확인
-   2. `mode=all`, `max_rows=2000` 으로 시험 실행
-   3. `max_rows` 비우고 전체 실행 → **Artifacts**에서 결과 다운로드
+### A. 파일데이터(zip) — 권장, 키 불필요
+1. [상가(상권)정보 파일데이터](https://www.data.go.kr/data/15083033/fileData.do)에서 최신 zip 다운로드
+2. 저장소 **Releases → Draft a new release** → 태그 `data-YYYYMM`(예: `data-202509`) → zip 파일 첨부 → Publish
+   (Release 첨부는 2GB까지 가능하고 git 저장소 용량을 차지하지 않음)
+3. **Actions → kliquor pipeline → Run workflow** → `mode=csv`, `release_tag=data-202509`
+4. 끝나면 실행 요약(Summary)에서 리포트 확인, **Artifacts**에서 CSV 다운로드
+
+> zip 직접 다운로드 URL이 있으면 `csv_url`에 넣어도 됩니다(포털 정책상 막힐 수 있음).
+
+### B. 오픈API — `DATA_GO_KR_API_KEY` 필요
+"소상공인시장진흥공단_상가(상권)정보" 오픈API 활용신청 후 `mode=probe` → `mode=all`.
 
 로컬 실행:
 ```bash
 pip install -r requirements.txt
 export DATA_GO_KR_API_KEY=...
-python -m kliquor.cli probe
-python -m kliquor.cli all
+python -m kliquor.cli ingest --file 소상공인시장진흥공단_상가(상권)정보_202509.zip   # 파일
+# 또는
+export DATA_GO_KR_API_KEY=... && python -m kliquor.cli all                         # API
 ```
 
 ## 다음 단계

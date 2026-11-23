@@ -6,17 +6,25 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "probe = API 컬럼 확인(5건) / all = 전체 수집+분석"
+        description: "csv = 상가정보 파일(zip) 분석(권장) / probe = API 확인 / all = API 수집+분석"
         type: choice
-        options: [probe, all]
-        default: probe
+        options: [csv, probe, all]
+        default: csv
+      release_tag:
+        description: "csv: 상가정보 zip을 첨부한 GitHub Release 태그 (예: data-202509)"
+        type: string
+        default: ""
+      csv_url:
+        description: "csv: 또는 zip 직접 다운로드 URL"
+        type: string
+        default: ""
       max_rows:
         description: "소스별 최대 수집 건수 (빈칸=전체, 시험 실행 시 2000 등)"
         type: string
         default: ""
 
 permissions:
-  contents: read
+  contents: read   # gh release download 에 필요
 
 jobs:
   test:
@@ -35,11 +43,34 @@ jobs:
     timeout-minutes: 120
     env:
       DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
       - run: pip install -r requirements.txt
+
+      - name: Download + ingest CSV
+        if: inputs.mode == 'csv'
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CSV_URL: ${{ inputs.csv_url }}
+        run: |
+          mkdir -p data/download
+          if [ -n "$RELEASE_TAG" ]; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir data/download --pattern "*.zip" --pattern "*.csv"
+          elif [ -n "$CSV_URL" ]; then
+            curl -fL --retry 3 -A "Mozilla/5.0" -o data/download/stores.zip "$CSV_URL"
+          else
+            echo "::error::release_tag 또는 csv_url 중 하나를 입력하세요."; exit 1
+          fi
+          ls -la data/download
+          FILE=$(ls data/download/* | head -1)
+          # zip이 아니라 HTML(로그인/오류 페이지)이 받아졌는지 확인
+          if file "$FILE" | grep -qi html; then
+            echo "::error::다운로드 결과가 HTML입니다. URL 대신 Release 첨부 방식을 사용하세요."; head -c 500 "$FILE"; exit 1
+          fi
+          python -m kliquor.cli ingest --file "$FILE"
 
       - name: Probe APIs
         if: inputs.mode == 'probe'
@@ -59,7 +90,7 @@ jobs:
       - name: Job summary
         if: always()
         run: |
-          for f in outputs/probe.md outputs/summary.md; do
+          for f in outputs/ingest.md outputs/probe.md outputs/summary.md; do
             [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"
           done
 

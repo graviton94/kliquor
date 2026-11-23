@@ -85,3 +85,28 @@ def test_seoul_parse():
     total, rows = SeoulOpenApi._parse("SVC", {"SVC": {"list_total_count": 3,
                                                       "RESULT": {"CODE": "INFO-000"}, "row": [{"a": 1}]}})
     assert total == 3 and rows == [{"a": 1}]
+
+
+def test_csv_zip_ingest(tmp_path):
+    import zipfile
+    from kliquor import csvload
+    kr = SRC["datagokr"]["stores"]["csv"]["columns"]
+    cols = list(kr.values()) + ["시도명", "표준산업분류명"]
+    def row(i, sido, lcls, scls):
+        r = {c: "" for c in cols}
+        r.update({kr["id"]: f"MA{i}", kr["name"]: f"가게{i}", kr["lcls"]: lcls, kr["mcls"]: "한식",
+                  kr["scls"]: scls, kr["gu"]: "성동구", kr["dong"]: "성수1가1동", kr["dong_code"]: "1120065",
+                  kr["lon"]: "127.05", kr["lat"]: "37.54", "시도명": sido})
+        return r
+    df = pd.DataFrame([row(1, "서울특별시", "음식", "횟집"), row(2, "서울특별시", "소매", "편의점"),
+                       row(3, "서울특별시", "음식", "소고기 구이")])
+    other = pd.DataFrame([row(9, "부산광역시", "음식", "횟집")])
+    zpath = tmp_path / "상가정보.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("소상공인시장진흥공단_상가(상권)정보_서울_202509.csv", df.to_csv(index=False).encode("cp949"))
+        z.writestr("소상공인시장진흥공단_상가(상권)정보_부산_202509.csv", other.to_csv(index=False).encode("cp949"))
+
+    out, log = csvload.load_store_file(zpath, SRC["datagokr"]["stores"])
+    assert sorted(out["bizesId"]) == ["MA1", "MA3"]
+    stores = transform.build_stores(out, SRC["datagokr"]["stores"], SC)
+    assert set(stores["biz_fit"]) == {0.95, 0.9}
