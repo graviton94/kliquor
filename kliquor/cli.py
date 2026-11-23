@@ -1,9 +1,9 @@
 """실행 진입점.
 
-  python -m kliquor.cli probe            # 각 API 5건씩 받아 컬럼 확인 → outputs/probe.md
-  python -m kliquor.cli collect [--quarter 20252] [--max-rows N]
-  python -m kliquor.cli build            # data/raw → outputs/*.csv, summary.md
-  python -m kliquor.cli all [--quarter 20252]
+  python -m kliquor.cli probe              # API 5건 받아 컬럼·업종 확인 → outputs/probe.md
+  python -m kliquor.cli collect [--max-rows N]
+  python -m kliquor.cli build              # data/raw → outputs/*
+  python -m kliquor.cli all [--max-rows N]
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import pandas as pd
 import yaml
 
 from . import report, score, transform
-from .seoul_api import SeoulOpenApi
+from .datagokr import DataGoKrApi
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
@@ -31,67 +31,64 @@ def load_cfg() -> tuple[dict, dict]:
     return src, sc
 
 
-def make_client(src: dict) -> SeoulOpenApi:
-    return SeoulOpenApi(os.environ.get("SEOUL_API_KEY", ""), src["base_url"],
-                        src["page_size"], src["request_sleep_sec"])
+def make_client(g: dict) -> DataGoKrApi:
+    return DataGoKrApi(os.environ.get("DATA_GO_KR_API_KEY", ""), g["base_url"],
+                       g["page_size"], g["request_sleep_sec"])
 
 
 def cmd_probe(src: dict) -> None:
-    api = make_client(src)
+    g = src["datagokr"]
+    s = g["stores"]
     OUT.mkdir(parents=True, exist_ok=True)
-    lines = ["# API probe 결과\n"]
-    for key, s in src["sources"].items():
-        lines.append(f"## {key} (`{s['service']}`)\n")
-        try:
-            total, rows = api.fetch_page(s["service"], 1, 5)
-            cols = list(rows[0].keys()) if rows else []
-            expected = set(s["columns"].values())
-            lines.append(f"- 전체 건수: {total:,}")
-            lines.append(f"- 응답 컬럼: `{', '.join(cols)}`")
-            lines.append(f"- 설정에 있으나 응답에 없는 컬럼: `{sorted(expected - set(cols)) or '없음'}`")
-            if rows:
-                lines.append(f"- 샘플: `{ {k: rows[0][k] for k in cols[:12]} }`")
-        except Exception as exc:  # noqa: BLE001 - probe는 실패도 보고
-            lines.append(f"- ❌ 실패: {exc}")
-        lines.append("")
-    text = "\n".join(lines)
+    lines = ["# API probe 결과\n", f"## stores (`{s['operation']}` {s['params']})\n"]
+    try:
+        api = make_client(g)
+        total, rows = api.fetch_page(s["operation"], s["params"], 1, rows=100)
+        cols = list(rows[0].keys()) if rows else []
+        lines += [f"- 전체 건수: **{total:,}**",
+                  f"- 응답 필드: `{', '.join(cols)}`",
+                  f"- 설정에 있으나 응답에 없는 필드: `{sorted(set(s['columns'].values()) - set(cols)) or '없음'}`"]
+        if rows:
+            df = pd.DataFrame(rows)
+            lines.append(f"- 샘플 1건: `{rows[0]}`")
+            for c in ["indsMclsNm", "indsSclsNm"]:
+                if c in df:
+                    lines.append(f"- `{c}` (100건 중): " + ", ".join(
+                        f"{k}({v})" for k, v in df[c].value_counts().items()))
+    except Exception as exc:  # noqa: BLE001 - probe는 실패도 보고
+        lines.append(f"- ❌ 실패: {exc}")
+        lines.append("- 확인: 포털에서 '소상공인시장진흥공단_상가(상권)정보' **활용신청**을 했는지, "
+                     "승인 후 키가 활성화되기까지(최대 1~2시간) 기다렸는지")
+    text = "\n".join(lines) + "\n"
     (OUT / "probe.md").write_text(text, encoding="utf-8")
     print(text)
 
 
-def cmd_collect(src: dict, quarter: str | None, max_rows: int | None) -> None:
-    if not quarter and any(s.get("quarter_param") for s in src["sources"].values()):
-        raise SystemExit("--quarter(예: 20252)를 지정하세요. 전체 분기를 받으면 수백만 건이 됩니다.")
-    api = make_client(src)
+def cmd_collect(src: dict, max_rows: int | None) -> None:
+    g = src["datagokr"]
+    s = g["stores"]
+    api = make_client(g)
     RAW.mkdir(parents=True, exist_ok=True)
-    for key, s in src["sources"].items():
-        extra = [quarter] if (s.get("quarter_param") and quarter) else []
-        print(f"[collect] {key} ({s['service']}) {extra or ''}", flush=True)
-        rows = list(api.iter_rows(s["service"], extra, max_rows))
-        df = pd.DataFrame(rows).astype(str)
-        df.to_parquet(RAW / f"{key}.parquet", index=False)
-        print(f"[collect] {key}: {len(df):,} rows", flush=True)
+    print(f"[collect] stores {s['params']}", flush=True)
+    df = pd.DataFrame(list(api.iter_rows(s["operation"], s["params"], max_rows))).astype(str)
+    df.to_parquet(RAW / "stores.parquet", index=False)
+    print(f"[collect] stores: {len(df):,} rows", flush=True)
 
 
 def cmd_build(src: dict, sc: dict) -> None:
-    S = src["sources"]
-    raw = {k: pd.read_parquet(RAW / f"{k}.parquet") for k in S}
-    rest = transform.build_restaurants(raw["restaurants"], S["restaurants"])
-    sales = transform.build_district_sales(raw["district_sales"], S["district_sales"], sc["district_industries"])
-    areas = transform.build_district_areas(raw["district_areas"], S["district_areas"])
-    rest = transform.match_to_districts(rest, areas, sc["district_match_radius_m"])
-
-    districts = score.score_districts(sales, areas, sc)
-    leads = score.score_leads(rest, districts, sc)
+    raw = pd.read_parquet(RAW / "stores.parquet")
+    stores = transform.build_stores(raw, src["datagokr"]["stores"], sc)
+    dongs = score.score_dongs(stores, sc)
+    leads = score.score_store_leads(stores, dongs, sc)
 
     OUT.mkdir(parents=True, exist_ok=True)
-    districts.to_csv(OUT / "district_scores.csv", index=False, encoding="utf-8-sig")
-    lead_cols = ["lead_score", "name", "biz_type", "gu", "road_address", "lot_address", "area_m2",
-                 "license_date", "is_new", "brand", "brand_branches", "is_franchise", "biz_fit",
-                 "district_code", "district_score", "lat", "lon", "id"]
-    leads.head(sc["top_leads"])[lead_cols].to_csv(OUT / "leads_top.csv", index=False, encoding="utf-8-sig")
-    leads[lead_cols].to_parquet(OUT / "leads_all.parquet", index=False)
-    summary = report.build_summary(districts, leads)
+    dongs.to_csv(OUT / "dong_scores.csv", index=False, encoding="utf-8-sig")
+    cols = ["lead_score", "name", "branch", "category", "biz_fit", "gu", "dong", "dong_score",
+            "road_address", "lot_address", "building", "floor", "brand_count", "is_franchise",
+            "lat", "lon", "id"]
+    leads.head(sc["top_leads"])[cols].to_csv(OUT / "leads_top.csv", index=False, encoding="utf-8-sig")
+    leads[cols].to_parquet(OUT / "leads_all.parquet", index=False)
+    summary = report.build_summary(dongs, leads)
     (OUT / "summary.md").write_text(summary, encoding="utf-8")
     print(summary)
 
@@ -99,15 +96,13 @@ def cmd_build(src: dict, sc: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="kliquor")
     p.add_argument("command", choices=["probe", "collect", "build", "all"])
-    p.add_argument("--quarter", default=None, help="상권 매출 기준 분기 YYYYQ (예: 20252)")
-    p.add_argument("--max-rows", type=int, default=None, help="소스별 최대 수집 건수(테스트용)")
+    p.add_argument("--max-rows", type=int, default=None, help="최대 수집 건수(시험 실행용)")
     a = p.parse_args(argv)
     src, sc = load_cfg()
-    quarter = a.quarter or None
     if a.command == "probe":
         cmd_probe(src)
     if a.command in ("collect", "all"):
-        cmd_collect(src, quarter, a.max_rows)
+        cmd_collect(src, a.max_rows)
     if a.command in ("build", "all"):
         cmd_build(src, sc)
     return 0

@@ -7,46 +7,45 @@
 
 | 데이터 | 출처 | 용도 |
 |---|---|---|
-| 일반음식점 인허가 | 서울 열린데이터광장 | 업소 목록(업태·면적·개업일·좌표) |
-| 상권 추정매출 | 서울시 상권분석서비스 | 저녁매출, 객단가, 30~50대 비중 |
-| 상권 영역 | 서울시 상권분석서비스 | 업소 → 상권 매칭 |
+| 서울 음식 업종 상가 전체 | 공공데이터포털 · 소상공인시장진흥공단 상가(상권)정보 | 업소 목록(업종 소분류·지점명·행정동·좌표) |
 
 ```
-수집(seoul_api) → 표준화·좌표변환·상권매칭(transform) → 상권 점수·업소 리드 점수(score) → 리포트(report)
+수집(datagokr) → 표준화·업종 적합도(transform) → 행정동 점수·업소 리드 점수(score) → 리포트(report)
 ```
 
 **결과물** (`outputs/`)
-- `district_scores.csv` — 상권별 증류주 기회 점수
+- `dong_scores.csv` — 행정동별 증류주 기회 점수
 - `leads_top.csv` — 상위 업소 리드 (엑셀에서 바로 열림)
 - `leads_all.parquet` — 전체 업소 점수
-- `summary.md` — 요약 리포트
+- `summary.md` — 요약 리포트 (규칙에 안 걸린 업종 목록 포함 → 규칙 보완용)
 
 ## 점수 방식
 
-- **상권 점수** = 저녁(17~24시) 매출 · 객단가 · 저녁 비중 · 30~50대 비중 (서울 내 백분위, 가중합)
-- **업소 점수** = 업태 적합도 · 상권 점수 · 업태 내 면적 순위 · 신규 개업 가점, 프랜차이즈(동일 브랜드 5개+) 감점
-- 모든 가중치와 업태별 적합도는 `config/scoring.yml`에서 조정합니다. **초기값은 가설입니다.**
+- **업종 적합도**: 업종명(중분류+소분류)에 정규식 규칙을 위에서부터 적용 (요리주점 1.0, 횟집 0.95, 고기구이 0.9 … 카페·분식 0)
+- **행정동 점수** = 적합 업소 밀집도 · 핵심 업종 비중 · 주점 수 (서울 내 백분위 가중합)
+- **업소 점수** = 업종 적합도 × 0.55 + 행정동 점수 × 0.45, 같은 상호 5개 이상이면 프랜차이즈로 보고 절반
+- 규칙과 가중치는 모두 `config/scoring.yml`에서 조정합니다. **초기값은 가설입니다.**
 
 ## 실행 방법 (GitHub Actions)
 
-1. [서울 열린데이터광장](https://data.seoul.go.kr)에서 **일반 인증키** 발급
-2. 저장소 **Settings → Secrets and variables → Actions → New repository secret**
-   - 이름: `SEOUL_API_KEY`, 값: 발급받은 키
+1. [공공데이터포털](https://www.data.go.kr)에서 **"소상공인시장진흥공단_상가(상권)정보"** 오픈API **활용신청** (자동승인, 키 활성화까지 1~2시간 걸릴 수 있음)
+2. 저장소 Secrets에 `DATA_GO_KR_API_KEY` 등록 (일반 인증키. 인코딩/디코딩 키 어느 쪽이든 동작)
 3. **Actions → kliquor pipeline → Run workflow**
-   1. `mode=probe` 먼저 실행 → 실행 결과 요약에서 각 API의 실제 컬럼 확인.
-      `config/sources.yml`의 서비스명·컬럼명이 다르면 수정합니다.
-   2. `mode=all`, `quarter=20252`(최신 공개 분기), `max_rows=2000`으로 시험 실행
-   3. 문제 없으면 `max_rows`를 비우고 전체 실행 → **Artifacts**에서 결과 다운로드
+   1. `mode=probe` → 실행 요약에서 응답 필드·업종명 확인
+   2. `mode=all`, `max_rows=2000` 으로 시험 실행
+   3. `max_rows` 비우고 전체 실행 → **Artifacts**에서 결과 다운로드
 
 로컬 실행:
 ```bash
 pip install -r requirements.txt
-export SEOUL_API_KEY=...
+export DATA_GO_KR_API_KEY=...
 python -m kliquor.cli probe
-python -m kliquor.cli all --quarter 20252
+python -m kliquor.cli all
 ```
 
 ## 다음 단계
+
+- **서울 열린데이터광장 연동** (키 발급 후): 상권 추정매출(저녁매출·객단가), 인허가(면적·개업일) — 클라이언트와 설정은 `kliquor/seoul_api.py`, `config/sources.yml`의 `seoul:`에 준비됨
 
 - **2단계**: 증류주 취급 신호 — 공개 메뉴·리뷰 텍스트의 키워드를 LLM으로 분류, 경쟁 브랜드가 공개한 취급처 목록 반영
 - **3단계**: 영업 결과(연락/성사/실패) 기록 → 가중치 보정 → 단순 예측 모델로 전환

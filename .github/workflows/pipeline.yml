@@ -10,10 +10,6 @@ on:
         type: choice
         options: [probe, all]
         default: probe
-      quarter:
-        description: "상권 매출 기준 분기 YYYYQ (예: 20252) — mode=all일 때 필수"
-        type: string
-        default: ""
       max_rows:
         description: "소스별 최대 수집 건수 (빈칸=전체, 시험 실행 시 2000 등)"
         type: string
@@ -38,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      SEOUL_API_KEY: ${{ secrets.SEOUL_API_KEY }}
+      DATA_GO_KR_API_KEY: ${{ secrets.DATA_GO_KR_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,13 +48,12 @@ jobs:
       - name: Collect + build
         if: inputs.mode == 'all'
         env:
-          QUARTER: ${{ inputs.quarter }}
           MAX_ROWS: ${{ inputs.max_rows }}
         run: |
           if [ -n "$MAX_ROWS" ]; then
-            python -m kliquor.cli all --quarter "$QUARTER" --max-rows "$MAX_ROWS"
+            python -m kliquor.cli all --max-rows "$MAX_ROWS"
           else
-            python -m kliquor.cli all --quarter "$QUARTER"
+            python -m kliquor.cli all
           fi
 
       - name: Job summary

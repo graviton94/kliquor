@@ -106,3 +106,30 @@ def match_to_districts(rest: pd.DataFrame, areas: pd.DataFrame, radius_m: float)
     rest.loc[target, "district_code"] = a.loc[idx[within], "district_code"].values
     rest.loc[rest.index[has_xy], "district_dist_m"] = dist
     return rest
+
+
+# ── 공공데이터포털 상가정보 ──────────────────────────────────────────────
+
+def category_fit(text: pd.Series, rules: list, default: float) -> pd.Series:
+    """업종 텍스트에 정규식 규칙을 순서대로 적용해 적합도 산출(처음 맞는 규칙)."""
+    out = pd.Series(np.nan, index=text.index, dtype=float)
+    for fit, pattern in rules:
+        hit = out.isna() & text.str.contains(pattern, regex=True, na=False)
+        out[hit] = float(fit)
+    return out.fillna(default)
+
+
+def build_stores(raw: pd.DataFrame, cfg: dict, scoring: dict) -> pd.DataFrame:
+    df = rename_columns(raw, cfg["columns"], "stores")
+    for c in ["name", "branch", "mcls", "scls", "gu", "dong"]:
+        df[c] = df[c].fillna("").astype(str).str.strip().replace({"nan": "", "None": ""})
+    df["lon"], df["lat"] = to_num(df["lon"]), to_num(df["lat"])
+    df["dong_code"] = df["dong_code"].astype(str)
+    df = df.drop_duplicates("id").reset_index(drop=True)
+
+    df["category"] = (df["mcls"] + " " + df["scls"]).str.strip()
+    df["biz_fit"] = category_fit(df["category"], scoring["category_fit_rules"], scoring["default_fit"])
+    any_rule = "|".join(f"(?:{p})" for _, p in scoring["category_fit_rules"])
+    df["fit_rule_default"] = ~df["category"].str.contains(any_rule, regex=True, na=False)
+    df["brand"] = df["name"].map(brand_key)
+    return df

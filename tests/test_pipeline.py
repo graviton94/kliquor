@@ -2,87 +2,67 @@
 import pandas as pd
 import pytest
 import yaml
-from pyproj import Transformer
 
-from kliquor import score, transform
+from kliquor import report, score, transform
 from kliquor.cli import ROOT
+from kliquor.datagokr import DataGoKrApi, normalize_key
 from kliquor.seoul_api import SeoulOpenApi
 
-SRC = yaml.safe_load((ROOT / "config/sources.yml").read_text(encoding="utf-8"))["sources"]
+SRC = yaml.safe_load((ROOT / "config/sources.yml").read_text(encoding="utf-8"))
 SC = yaml.safe_load((ROOT / "config/scoring.yml").read_text(encoding="utf-8"))
+COLS = SRC["datagokr"]["stores"]["columns"]
 
 
-def _xy(lon, lat, crs):
-    return Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon, lat)
-
-
-def _rest_row(i, name, biz, lon, lat, status="01", area="100", date="20250101"):
-    x, y = _xy(lon, lat, SRC["restaurants"]["crs"])
-    c = SRC["restaurants"]["columns"]
-    return {c["id"]: str(i), c["name"]: name, c["biz_type"]: biz, c["status_code"]: status,
-            c["status_name"]: "영업/정상", c["license_date"]: date, c["close_date"]: "",
-            c["area_m2"]: area, c["road_address"]: "서울특별시 성동구 성수이로 1",
-            c["lot_address"]: "", c["x"]: f"{x:.3f}", c["y"]: f"{y:.3f}"}
+def _store(i, name, mcls, scls, dong, branch=""):
+    return {COLS["id"]: f"MA{i}", COLS["name"]: name, COLS["branch"]: branch, COLS["lcls"]: "음식",
+            COLS["mcls"]: mcls, COLS["scls"]: scls, COLS["gu"]: "성동구" if dong == "성수" else "노원구",
+            COLS["dong"]: dong, COLS["dong_code"]: "1" if dong == "성수" else "2",
+            COLS["road_address"]: "서울특별시 ...", COLS["lot_address"]: "", COLS["building"]: "",
+            COLS["floor"]: "1", COLS["lon"]: "127.05", COLS["lat"]: "37.54"}
 
 
 @pytest.fixture
-def data():
-    rest = pd.DataFrame([
-        _rest_row(1, "성수 소주방", "정종/대포집/소주방", 127.0560, 37.5445, area="120"),
-        _rest_row(2, "카페 라떼", "까페", 127.0561, 37.5446),
-        _rest_row(3, "폐업한 한식당", "한식", 127.0562, 37.5447, status="03"),
-        _rest_row(4, "멀리 있는 일식", "일식", 126.90, 37.48),
-    ] + [_rest_row(10 + i, f"치킨왕 {g}점", "호프/통닭", 127.0563, 37.5448)
-         for i, g in enumerate(["강남", "성수", "홍대", "잠실", "신촌"])])
-
-    sc = SRC["district_areas"]["columns"]
-    ax, ay = _xy(127.0560, 37.5445, SRC["district_areas"]["crs"])
-    bx, by = _xy(126.98, 37.57, SRC["district_areas"]["crs"])
-    areas = pd.DataFrame([
-        {sc["district_code"]: "A", sc["district_name"]: "성수카페거리", sc["district_type"]: "골목상권",
-         sc["gu_name"]: "성동구", sc["dong_name"]: "성수2가1동", sc["x"]: str(ax), sc["y"]: str(ay)},
-        {sc["district_code"]: "B", sc["district_name"]: "종로", sc["district_type"]: "발달상권",
-         sc["gu_name"]: "종로구", sc["dong_name"]: "종로1가동", sc["x"]: str(bx), sc["y"]: str(by)},
-    ])
-
-    ss = SRC["district_sales"]["columns"]
-    def sale(code, q, ind, amt, cnt, d1, d2):
-        return {ss["quarter"]: q, ss["district_code"]: code, ss["district_name"]: code,
-                ss["industry_name"]: ind, ss["sales_amt"]: str(amt), ss["sales_cnt"]: str(cnt),
-                ss["sales_17_21"]: str(d1), ss["sales_21_24"]: str(d2), ss["sales_age30"]: str(amt * .3),
-                ss["sales_age40"]: str(amt * .2), ss["sales_age50"]: str(amt * .1)}
-    sales = pd.DataFrame([
-        sale("A", "20252", "한식음식점", 1e9, 20000, 4e8, 2e8),
-        sale("A", "20252", "커피-음료", 9e9, 900000, 1e8, 0),     # 제외 업종
-        sale("B", "20252", "한식음식점", 5e8, 25000, 1e8, 0),
-        sale("A", "20251", "한식음식점", 1, 1, 0, 0),              # 이전 분기 → 제외
-    ])
-    return rest, areas, sales
+def stores_raw():
+    rows = [
+        _store(1, "성수 술집", "주점", "요리 주점", "성수"),
+        _store(2, "성수 횟집", "한식", "횟집", "성수"),
+        _store(3, "성수 고기", "한식", "소고기 구이", "성수"),
+        _store(4, "라떼하우스", "비알코올", "카페", "성수"),
+        _store(5, "상계 분식", "기타 간이", "김밥/만두/분식", "상계"),
+        _store(6, "상계 국밥", "한식", "국밥", "상계"),
+        _store(7, "알수없음", "기타", "무슨무슨 요리", "상계"),
+    ]
+    rows += [_store(10 + i, "치킨왕", "기타 간이", "치킨", "상계", branch=f"{g}점")
+             for i, g in enumerate(["강남", "성수", "홍대", "잠실", "신촌"])]
+    rows.append(_store(1, "성수 술집", "주점", "요리 주점", "성수"))  # 중복
+    return pd.DataFrame(rows)
 
 
-def test_end_to_end(data):
-    rest_raw, areas_raw, sales_raw = data
-    rest = transform.build_restaurants(rest_raw, SRC["restaurants"])
-    assert "폐업한 한식당" not in set(rest["name"])
-    assert rest["lat"].between(37.4, 37.7).all()
+def test_store_pipeline(stores_raw):
+    stores = transform.build_stores(stores_raw, SRC["datagokr"]["stores"], SC)
+    assert len(stores) == len(stores_raw) - 1
+    fit = stores.set_index("name")["biz_fit"]
+    assert fit["성수 술집"] == 1.0 and fit["라떼하우스"] == 0.0 and fit["상계 분식"] == 0.0
+    assert fit["성수 횟집"] >= 0.9 and fit["알수없음"] == SC["default_fit"]
+    assert stores.set_index("name").loc["알수없음", "fit_rule_default"]
 
-    areas = transform.build_district_areas(areas_raw, SRC["district_areas"])
-    sales = transform.build_district_sales(sales_raw, SRC["district_sales"], SC["district_industries"])
-    assert len(sales) == 2 and sales.loc[sales.district_code == "A", "sales_amt"].iloc[0] == 1e9
+    dongs = score.score_dongs(stores, SC)
+    assert dongs.iloc[0]["dong"] == "성수"
 
-    rest = transform.match_to_districts(rest, areas, SC["district_match_radius_m"])
-    assert rest.set_index("name").loc["성수 소주방", "district_code"] == "A"
-    assert pd.isna(rest.set_index("name").loc["멀리 있는 일식", "district_code"])
+    leads = score.score_store_leads(stores, dongs, SC)
+    assert leads.iloc[0]["name"] == "성수 술집"
+    by = leads.drop_duplicates("name").set_index("name")
+    assert by.loc["라떼하우스", "lead_score"] == 0
+    assert by.loc["치킨왕", "is_franchise"]
 
-    districts = score.score_districts(sales, areas, SC)
-    assert districts.iloc[0]["district_code"] == "A"
+    md = report.build_summary(dongs, leads)
+    assert "성수 술집" in md and "무슨무슨 요리" in md
 
-    leads = score.score_leads(rest, districts, SC, today=pd.Timestamp("2026-01-01"))
-    by = leads.set_index("name")
-    assert leads.iloc[0]["name"] == "성수 소주방"
-    assert by.loc["카페 라떼", "lead_score"] == 0
-    assert by.loc["치킨왕 성수점", "is_franchise"]
-    assert by.loc["치킨왕 성수점", "brand"] == "치킨왕"
+
+def test_fit_rule_order():
+    s = pd.Series(["일식 일식 카레/돈가스/덮밥", "일식 일식 회/초밥", "주점 생맥주 전문", "주점 요리 주점"])
+    f = transform.category_fit(s, SC["category_fit_rules"], SC["default_fit"]).tolist()
+    assert f == [0.3, 0.95, 0.35, 1.0]
 
 
 def test_brand_key():
@@ -91,19 +71,17 @@ def test_brand_key():
     assert transform.brand_key("우리집") == "우리집"
 
 
-def test_api_parse():
+def test_datagokr_parse_and_key():
+    ok = {"header": {"resultCode": "00"}, "body": {"totalCount": 2, "items": [{"a": 1}, {"a": 2}]}}
+    assert DataGoKrApi._parse(ok) == (2, [{"a": 1}, {"a": 2}])
+    assert DataGoKrApi._parse({"header": {"resultCode": "03"}}) == (0, [])
+    nested = {"header": {"resultCode": "00"}, "body": {"totalCount": 1, "items": {"item": {"a": 1}}}}
+    assert DataGoKrApi._parse(nested) == (1, [{"a": 1}])
+    assert normalize_key("abc%2Bdef%3D%3D") == "abc+def=="
+    assert normalize_key("abc+def==") == "abc+def=="
+
+
+def test_seoul_parse():
     total, rows = SeoulOpenApi._parse("SVC", {"SVC": {"list_total_count": 3,
                                                       "RESULT": {"CODE": "INFO-000"}, "row": [{"a": 1}]}})
     assert total == 3 and rows == [{"a": 1}]
-    assert SeoulOpenApi._parse("SVC", {"RESULT": {"CODE": "INFO-200", "MESSAGE": "없음"}}) == (0, [])
-
-
-def test_report(data):
-    from kliquor import report
-    rest_raw, areas_raw, sales_raw = data
-    areas = transform.build_district_areas(areas_raw, SRC["district_areas"])
-    sales = transform.build_district_sales(sales_raw, SRC["district_sales"], SC["district_industries"])
-    rest = transform.match_to_districts(transform.build_restaurants(rest_raw, SRC["restaurants"]), areas, 400)
-    districts = score.score_districts(sales, areas, SC)
-    md = report.build_summary(districts, score.score_leads(rest, districts, SC))
-    assert "성수 소주방" in md and "20252" in md

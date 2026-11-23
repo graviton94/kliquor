@@ -1,60 +1,60 @@
-# 데이터 소스 정의 (서울 열린데이터광장 OpenAPI)
-# 호출 형식: http://openapi.seoul.go.kr:8088/{KEY}/json/{service}/{start}/{end}/{추가인자...}
-#
-# ⚠️ service 이름과 컬럼명은 최초 실행 전 열린데이터광장 명세서로 확인 필요.
-#    `python -m kliquor.cli probe` (또는 Actions의 mode=probe)를 실행하면
-#    각 서비스의 실제 컬럼 목록이 outputs/probe.md 에 기록되니, 아래 columns 매핑을 맞춰 주세요.
+# 데이터 소스 정의
+# ⚠️ 실제 응답 컬럼은 `mode=probe` 실행 결과(outputs/probe.md)로 확인 후 columns 매핑을 맞춰 주세요.
 
-base_url: "http://openapi.seoul.go.kr:8088"
-page_size: 1000          # 서울 OpenAPI 1회 최대 1000건
-request_sleep_sec: 0.2
+# ── 1차 소스: 공공데이터포털 (DATA_GO_KR_API_KEY) ─────────────────────────────
+datagokr:
+  base_url: "https://apis.data.go.kr/B553077/api/open/sdsc2"
+  page_size: 1000
+  request_sleep_sec: 0.2
 
-sources:
-  restaurants:
-    description: "서울시 일반음식점 인허가 정보"
-    service: "LOCALDATA_072404"
-    crs: "EPSG:2097"       # 인허가 좌표계(중부원점 Bessel). probe 결과로 검증
-    columns:               # 내부 표준명: API 컬럼명
-      id: MGTNO
-      name: BPLCNM
-      biz_type: UPTAENM
-      status_code: TRDSTATEGBN
-      status_name: TRDSTATENM
-      license_date: APVPERMYMD
-      close_date: DCBYMD
-      area_m2: SITEAREA
-      road_address: RDNWHLADDR
-      lot_address: SITEWHLADDR
-      x: X
-      y: Y
-    open_status_codes: ["01"]   # 01 = 영업/정상
+  stores:
+    description: "소상공인시장진흥공단_상가(상권)정보 — 서울 음식 업종 전체"
+    operation: "storeListInDong"
+    params:
+      divId: "ctprvnCd"     # 시도 단위
+      key: "11"             # 서울특별시
+      indsLclsCd: "I2"      # 대분류: 음식
+    columns:                # 내부 표준명: API 필드명
+      id: bizesId
+      name: bizesNm
+      branch: brchNm
+      lcls: indsLclsNm
+      mcls: indsMclsNm
+      scls: indsSclsNm
+      gu: signguNm
+      dong: adongNm
+      dong_code: adongCd
+      road_address: rdnmAdr
+      lot_address: lnoAdr
+      building: bldNm
+      floor: flrNo
+      lon: lon
+      lat: lat
 
-  district_sales:
-    description: "서울시 상권분석서비스(추정매출-상권)"
-    service: "VwsmTrdarSelngQq"
-    quarter_param: true      # 기준 분기(YYYYQ)를 추가 인자로 전달
-    columns:
-      quarter: STDR_YYQU_CD
-      district_code: TRDAR_CD
-      district_name: TRDAR_CD_NM
-      industry_name: SVC_INDUTY_CD_NM
-      sales_amt: THSMON_SELNG_AMT
-      sales_cnt: THSMON_SELNG_CO
-      sales_17_21: TMZON_17_21_SELNG_AMT
-      sales_21_24: TMZON_21_24_SELNG_AMT
-      sales_age30: AGRDE_30_SELNG_AMT
-      sales_age40: AGRDE_40_SELNG_AMT
-      sales_age50: AGRDE_50_SELNG_AMT
-
-  district_areas:
-    description: "서울시 상권분석서비스(영역-상권)"
-    service: "TbgisTrdarRelm"
-    crs: "EPSG:5181"
-    columns:
-      district_code: TRDAR_CD
-      district_name: TRDAR_CD_NM
-      district_type: TRDAR_SE_CD_NM
-      gu_name: SIGNGU_CD_NM
-      dong_name: ADSTRD_CD_NM
-      x: XCNTS_VALUE
-      y: YDNTS_VALUE
+# ── 보류: 서울 열린데이터광장 (SEOUL_API_KEY 발급 후 활성화) ──────────────────
+# 상권별 추정매출(저녁매출·객단가)과 인허가(면적·개업일)를 붙여 점수를 고도화할 예정.
+seoul:
+  base_url: "http://openapi.seoul.go.kr:8088"
+  page_size: 1000
+  request_sleep_sec: 0.2
+  sources:
+    restaurants:
+      service: "LOCALDATA_072404"
+      crs: "EPSG:2097"
+      columns: {id: MGTNO, name: BPLCNM, biz_type: UPTAENM, status_code: TRDSTATEGBN,
+                status_name: TRDSTATENM, license_date: APVPERMYMD, close_date: DCBYMD,
+                area_m2: SITEAREA, road_address: RDNWHLADDR, lot_address: SITEWHLADDR, x: X, y: Y}
+      open_status_codes: ["01"]
+    district_sales:
+      service: "VwsmTrdarSelngQq"
+      quarter_param: true
+      columns: {quarter: STDR_YYQU_CD, district_code: TRDAR_CD, district_name: TRDAR_CD_NM,
+                industry_name: SVC_INDUTY_CD_NM, sales_amt: THSMON_SELNG_AMT, sales_cnt: THSMON_SELNG_CO,
+                sales_17_21: TMZON_17_21_SELNG_AMT, sales_21_24: TMZON_21_24_SELNG_AMT,
+                sales_age30: AGRDE_30_SELNG_AMT, sales_age40: AGRDE_40_SELNG_AMT,
+                sales_age50: AGRDE_50_SELNG_AMT}
+    district_areas:
+      service: "TbgisTrdarRelm"
+      crs: "EPSG:5181"
+      columns: {district_code: TRDAR_CD, district_name: TRDAR_CD_NM, district_type: TRDAR_SE_CD_NM,
+                gu_name: SIGNGU_CD_NM, dong_name: ADSTRD_CD_NM, x: XCNTS_VALUE, y: YDNTS_VALUE}
